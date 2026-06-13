@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TMS Traffic Flow</title>
+  <script src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.23.2/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #f0f2f5;
+      color: #222;
+      min-height: 100vh;
+    }
+    .container { max-width: 1440px; margin: 0 auto; padding: 24px 20px; }
+    h1 { font-size: 22px; font-weight: 700; color: #1a1a2e; margin-bottom: 18px; letter-spacing: -0.3px; }
+
+    .controls {
+      background: #fff;
+      border-radius: 10px;
+      padding: 14px 18px;
+      margin-bottom: 14px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 20px;
+      align-items: center;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+    }
+    .controls label { font-size: 13px; font-weight: 600; color: #555; display: flex; align-items: center; gap: 8px; }
+    .controls select {
+      padding: 6px 10px;
+      border: 1px solid #d0d5dd;
+      border-radius: 6px;
+      font-size: 13px;
+      background: #fafafa;
+      cursor: pointer;
+      outline: none;
+    }
+    .controls select:focus { border-color: #4e79a7; box-shadow: 0 0 0 2px rgba(78,121,167,0.15); }
+
+    .chart-card {
+      background: #fff;
+      border-radius: 10px;
+      padding: 20px 20px 16px;
+      margin-bottom: 14px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+      position: relative;
+      height: 420px;
+    }
+    .chart-card canvas { width: 100% !important; height: 100% !important; }
+    .chart-overlay {
+      position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px; color: #888; background: rgba(255,255,255,0.85);
+      border-radius: 10px; pointer-events: none;
+    }
+
+    .legend-card {
+      background: #fff;
+      border-radius: 10px;
+      padding: 16px 18px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+    }
+    .legend-actions { display: flex; gap: 8px; margin-bottom: 14px; align-items: center; }
+    .legend-actions span { font-size: 12px; color: #888; margin-left: 4px; }
+    .btn-action {
+      padding: 5px 14px;
+      border: 1px solid #d0d5dd;
+      border-radius: 6px;
+      background: #fff;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+      color: #444;
+      transition: background 0.12s;
+    }
+    .btn-action:hover { background: #f5f5f5; }
+
+    .legend-grid { display: flex; flex-wrap: wrap; gap: 6px; }
+    .station-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 5px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+      border: 1.5px solid;
+      background: transparent;
+      color: #222;
+      transition: opacity 0.15s, background 0.12s;
+      white-space: nowrap;
+    }
+    .station-btn:hover { filter: brightness(0.95); }
+    .station-btn.hidden { opacity: 0.32; }
+    .swatch-wrap { flex-shrink: 0; display: flex; align-items: center; }
+
+    .smoothing-group { display: flex; }
+    .smoothing-btn {
+      padding: 5px 11px;
+      border: 1px solid #d0d5dd;
+      border-right: none;
+      background: #fafafa;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+      color: #555;
+      transition: background 0.1s, color 0.1s;
+      white-space: nowrap;
+    }
+    .smoothing-btn:first-child { border-radius: 6px 0 0 6px; }
+    .smoothing-btn:last-child  { border-radius: 0 6px 6px 0; border-right: 1px solid #d0d5dd; }
+    .smoothing-btn.active { background: #4e79a7; color: #fff; border-color: #4e79a7; }
+    .smoothing-btn.active + .smoothing-btn { border-left-color: #4e79a7; }
+    .smoothing-btn:hover:not(.active) { background: #f0f0f0; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    const COLORS = [
+      '#4e79a7','#f28e2b','#e15759','#76b7b2','#59a14f',
+      '#edc948','#b07aa1','#ff9da7','#9c755f','#bab0ac',
+      '#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd',
+      '#8c564b','#e377c2','#17becf','#bcbd22','#7f7f7f',
+      '#393b79','#843c39','#3d6b35','#7b4013','#5a3572',
+    ];
+
+    const SINGLE_DASHES = [[], [8,4], [3,3], [10,4,3,4], [2,6]];
+
+    function colorFor(i)      { return COLORS[i % COLORS.length]; }
+    function singleDashFor(i) { return SINGLE_DASHES[i % SINGLE_DASHES.length]; }
+
+    function directionLabel(d) {
+      if (d === 1) return 'Direction 1 (due north)';
+      if (d === 2) return 'Direction 2 (due south)';
+      return `Direction ${d}`;
+    }
+
+    const SMOOTHING_OPTIONS = [
+      { value: 1,  label: 'Raw'    },
+      { value: 5,  label: '5 min'  },
+      { value: 10, label: '10 min' },
+      { value: 15, label: '15 min' },
+      { value: 30, label: '30 min' },
+      { value: 60, label: '1 h'    },
+    ];
+
+    const MINUTE_LABELS = Array.from({ length: 1440 }, (_, i) =>
+      i % 60 === 0 ? `${String(i / 60 | 0).padStart(2, '0')}:00` : ''
+    );
+
+    function applySmoothing(data, w) {
+      if (w <= 1) return data;
+      const half = Math.floor(w / 2);
+      return data.map((_, i) => {
+        const lo = Math.max(0, i - half);
+        const hi = Math.min(data.length - 1, i + half);
+        let sum = 0;
+        for (let j = lo; j <= hi; j++) sum += data[j];
+        return Math.round(sum / (hi - lo + 1));
+      });
+    }
+
+    function flowTitle(d1date, direction, smoothing, d2date) {
+      const avg   = smoothing > 1 ? ` — ${smoothing < 60 ? smoothing + '-min' : '1h'} avg` : '';
+      const dates = d2date ? `${d1date} vs ${d2date}` : d1date;
+      return `Traffic Flow — ${dates} — ${directionLabel(direction)}${avg}`;
+    }
+
+    function speedTitle(d1date, direction, smoothing, d2date) {
+      const avg   = smoothing > 1 ? ` — ${smoothing < 60 ? smoothing + '-min' : '1h'} avg` : '';
+      const dates = d2date ? `${d1date} vs ${d2date}` : d1date;
+      return `Vehicle Speeds — ${dates} — ${directionLabel(direction)}${avg}`;
+    }
+
+    function Swatch({ color, dash, isComparing }) {
+      if (isComparing) {
+        return (
+          <svg className="swatch-wrap" width="26" height="18">
+            <line x1="1" y1="5"  x2="25" y2="5"  stroke={color} strokeWidth="2.5" strokeLinecap="round" />
+            <line x1="1" y1="13" x2="25" y2="13" stroke={color} strokeWidth="2.5"
+                  strokeDasharray="8 4" strokeLinecap="round" />
+          </svg>
+        );
+      }
+      const dashStr = dash && dash.length ? dash.join(' ') : undefined;
+      return (
+        <svg className="swatch-wrap" width="26" height="14">
+          <line x1="1" y1="7" x2="25" y2="7" stroke={color} strokeWidth="2.5"
+                strokeDasharray={dashStr} strokeLinecap="round" />
+        </svg>
+      );
+    }
+
+    // Build Chart.js dataset array from one field ('minutely' or 'speeds')
+    function buildDatasets(stations, d2byId, isComparing, field, d1date, d2date) {
+      const ds = [];
+      stations.forEach((st, i) => {
+        const color = colorFor(i);
+        ds.push({
+          label: isComparing ? `${st.name} (${st.id}) — ${d1date}` : `${st.name} (${st.id})`,
+          data: st[field],
+          borderColor: color,
+          backgroundColor: color + '18',
+          borderWidth: 1.5,
+          borderDash: isComparing ? [] : singleDashFor(i),
+          pointRadius: 0, pointHoverRadius: 0, tension: 0, hidden: false,
+        });
+      });
+      if (isComparing) {
+        stations.forEach((st, i) => {
+          const color = colorFor(i);
+          const s2 = d2byId[st.id];
+          ds.push({
+            label: `${st.name} (${st.id}) — ${d2date}`,
+            data: s2 ? s2[field] : new Array(1440).fill(0),
+            borderColor: color,
+            backgroundColor: color + '18',
+            borderWidth: 1.5,
+            borderDash: [8, 4],
+            pointRadius: 0, pointHoverRadius: 0, tension: 0, hidden: false,
+          });
+        });
+      }
+      return ds;
+    }
+
+    // Create a Chart.js line chart
+    function makeChart(canvas, datasets, titleText, yLabel) {
+      return new Chart(canvas, {
+        type: 'line',
+        data: { labels: MINUTE_LABELS, datasets },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          interaction: { mode: 'index', intersect: false },
+          plugins: {
+            legend: { display: false },
+            title: {
+              display: true,
+              text: titleText,
+              font: { size: 15, weight: 'bold', family: "'Segoe UI', sans-serif" },
+              color: '#1a1a2e',
+              padding: { top: 4, bottom: 18 },
+            },
+            tooltip: {
+              backgroundColor: 'rgba(255,255,255,0.95)',
+              borderColor: '#e0e0e0',
+              borderWidth: 1,
+              titleColor: '#222',
+              bodyColor: '#444',
+              padding: 10,
+              boxPadding: 4,
+              callbacks: {
+                title: (items) => {
+                  const idx = items[0]?.dataIndex ?? 0;
+                  return `${String(idx / 60 | 0).padStart(2, '0')}:${String(idx % 60).padStart(2, '0')}`;
+                },
+              },
+            },
+          },
+          scales: {
+            x: {
+              title: { display: true, text: 'Time of Day', color: '#555', font: { size: 12 } },
+              grid: { color: 'rgba(0,0,0,0.04)' },
+              ticks: {
+                color: '#666', font: { size: 11 }, maxRotation: 0,
+                callback: (val, idx) => MINUTE_LABELS[idx] || null,
+                autoSkip: false,
+              },
+            },
+            y: {
+              title: { display: true, text: yLabel, color: '#555', font: { size: 12 } },
+              beginAtZero: true,
+              grid: { color: 'rgba(0,0,0,0.06)' },
+              ticks: { color: '#666', font: { size: 11 } },
+            },
+          },
+        },
+      });
+    }
+
+    // Attach hover-thickening to a canvas. chartGetter() returns the live Chart instance.
+    // Returns a cleanup fn that removes the listeners.
+    function attachHover(canvas, chartGetter, hoverRef, N, isComparing) {
+      const resetWidths = (chart) =>
+        chart.data.datasets.forEach(ds => { ds.borderWidth = 1.5; });
+
+      const onMove = (e) => {
+        const chart = chartGetter();
+        if (!chart) return;
+        const els = chart.getElementsAtEventForMode(e, 'nearest', { intersect: false }, true);
+        const idx = els.length ? els[0].datasetIndex : -1;
+        if (idx === hoverRef.current) return;
+        hoverRef.current = idx;
+        resetWidths(chart);
+        if (idx >= 0) {
+          chart.data.datasets[idx].borderWidth = 3;
+          if (isComparing) {
+            const paired = idx < N ? idx + N : idx - N;
+            chart.data.datasets[paired].borderWidth = 3;
+          }
+        }
+        chart.update('none');
+      };
+
+      const onLeave = () => {
+        const chart = chartGetter();
+        if (!chart || hoverRef.current === -1) return;
+        hoverRef.current = -1;
+        resetWidths(chart);
+        chart.update('none');
+      };
+
+      canvas.addEventListener('mousemove', onMove);
+      canvas.addEventListener('mouseleave', onLeave);
+      return () => {
+        canvas.removeEventListener('mousemove', onMove);
+        canvas.removeEventListener('mouseleave', onLeave);
+      };
+    }
+
+    function App() {
+      const [dates, setDates]         = useState([]);
+      const [selDate, setSelDate]     = useState('');
+      const [selDate2, setSelDate2]   = useState('');
+      const [direction, setDirection] = useState(1);
+      const [payload, setPayload]     = useState(null);
+      const [loading, setLoading]     = useState(false);
+      const [hidden, setHidden]       = useState(new Set());
+      const [smoothing, setSmoothing] = useState(1);
+
+      const canvasRef      = useRef(null);
+      const chartRef       = useRef(null);
+      const canvasSpeedRef = useRef(null);
+      const chartSpeedRef  = useRef(null);
+      const orderRef       = useRef([]);
+      const hoverRef       = useRef(-1);
+      const hoverSpeedRef  = useRef(-1);
+
+      // ── Load available dates ──────────────────────────────────────────────────
+      useEffect(() => {
+        fetch('/api/dates')
+          .then(r => r.json())
+          .then(ds => {
+            setDates(ds);
+            if (ds.length > 0) setSelDate(ds[ds.length - 1]);
+          });
+      }, []);
+
+      // ── Fetch data ────────────────────────────────────────────────────────────
+      useEffect(() => {
+        if (!selDate) return;
+        setLoading(true);
+        const date2 = (selDate2 && selDate2 !== selDate) ? selDate2 : null;
+        Promise.all([
+          fetch(`/api/data?date=${selDate}&direction=${direction}`).then(r => r.json()),
+          date2
+            ? fetch(`/api/data?date=${date2}&direction=${direction}`).then(r => r.json())
+            : Promise.resolve(null),
+        ])
+          .then(([d1, d2]) => {
+            setPayload({ d1, d2 });
+            setHidden(new Set());
+            setLoading(false);
+          })
+          .catch(() => setLoading(false));
+      }, [selDate, selDate2, direction]);
+
+      // ── Build / rebuild both charts when payload changes ──────────────────────
+      useEffect(() => {
+        if (!payload || !canvasRef.current || !canvasSpeedRef.current) return;
+        hoverRef.current      = -1;
+        hoverSpeedRef.current = -1;
+
+        const { d1, d2 }  = payload;
+        const isComparing = d2 !== null;
+        const stations    = d1.stations;
+        const N           = stations.length;
+        orderRef.current  = stations.map(s => s.id);
+
+        const byId2 = isComparing
+          ? Object.fromEntries(d2.stations.map(s => [s.id, s]))
+          : {};
+
+        chartRef.current = makeChart(
+          canvasRef.current,
+          buildDatasets(stations, byId2, isComparing, 'minutely', d1.date, d2?.date),
+          flowTitle(d1.date, d1.direction, smoothing, d2?.date),
+          'Vehicles / Minute'
+        );
+
+        chartSpeedRef.current = makeChart(
+          canvasSpeedRef.current,
+          buildDatasets(stations, byId2, isComparing, 'speeds', d1.date, d2?.date),
+          speedTitle(d1.date, d1.direction, smoothing, d2?.date),
+          'Average Speed (km/h)'
+        );
+
+        const cleanupFlow  = attachHover(
+          canvasRef.current, () => chartRef.current,
+          hoverRef, N, isComparing
+        );
+        const cleanupSpeed = attachHover(
+          canvasSpeedRef.current, () => chartSpeedRef.current,
+          hoverSpeedRef, N, isComparing
+        );
+
+        return () => {
+          cleanupFlow();
+          cleanupSpeed();
+          chartRef.current?.destroy();
+          chartRef.current = null;
+          chartSpeedRef.current?.destroy();
+          chartSpeedRef.current = null;
+        };
+      }, [payload]);
+
+      // ── Apply smoothing to both charts ────────────────────────────────────────
+      useEffect(() => {
+        const fc = chartRef.current;
+        const sc = chartSpeedRef.current;
+        if (!fc || !sc || !payload) return;
+
+        const { d1, d2 } = payload;
+        const N     = d1.stations.length;
+        const byId2 = d2 ? Object.fromEntries(d2.stations.map(s => [s.id, s])) : {};
+
+        d1.stations.forEach((st, i) => {
+          fc.data.datasets[i].data = applySmoothing(st.minutely, smoothing);
+          sc.data.datasets[i].data = applySmoothing(st.speeds,   smoothing);
+          if (d2) {
+            const s2 = byId2[st.id];
+            fc.data.datasets[i + N].data =
+              applySmoothing(s2 ? s2.minutely : new Array(1440).fill(0), smoothing);
+            sc.data.datasets[i + N].data =
+              applySmoothing(s2 ? s2.speeds   : new Array(1440).fill(0), smoothing);
+          }
+        });
+
+        fc.options.plugins.title.text = flowTitle(d1.date, d1.direction, smoothing, d2?.date);
+        sc.options.plugins.title.text = speedTitle(d1.date, d1.direction, smoothing, d2?.date);
+        fc.update('none');
+        sc.update('none');
+      }, [smoothing, payload]);
+
+      // ── Toggle visibility on both charts ──────────────────────────────────────
+      useEffect(() => {
+        const charts = [chartRef.current, chartSpeedRef.current].filter(Boolean);
+        if (charts.length === 0) return;
+        const N           = orderRef.current.length;
+        const isComparing = charts[0].data.datasets.length > N;
+        orderRef.current.forEach((id, i) => {
+          const vis = !hidden.has(id);
+          charts.forEach(chart => {
+            chart.setDatasetVisibility(i, vis);
+            if (isComparing) chart.setDatasetVisibility(i + N, vis);
+          });
+        });
+        charts.forEach(c => c.update('none'));
+      }, [hidden]);
+
+      const toggleStation = id =>
+        setHidden(prev => {
+          const next = new Set(prev);
+          next.has(id) ? next.delete(id) : next.add(id);
+          return next;
+        });
+
+      const stations     = payload ? payload.d1.stations : [];
+      const isComparing  = payload?.d2 != null;
+      const visibleCount = stations.length - hidden.size;
+
+      return (
+        <div className="container">
+          <h1>TMS Traffic Flow</h1>
+
+          <div className="controls">
+            <label>
+              Date
+              <select value={selDate} onChange={e => setSelDate(e.target.value)}>
+                {dates.map(d => <option key={d} value={d}>{d}</option>)}
+              </select>
+            </label>
+            <label>
+              Compare with
+              <select value={selDate2} onChange={e => setSelDate2(e.target.value)}>
+                <option value="">— none —</option>
+                {dates.filter(d => d !== selDate).map(d =>
+                  <option key={d} value={d}>{d}</option>
+                )}
+              </select>
+            </label>
+            <label>
+              Direction
+              <select value={direction} onChange={e => setDirection(Number(e.target.value))}>
+                <option value={1}>1 — due north</option>
+                <option value={2}>2 — due south</option>
+              </select>
+            </label>
+            <label>
+              Smoothing
+              <div className="smoothing-group">
+                {SMOOTHING_OPTIONS.map(({ value, label }) => (
+                  <button key={value}
+                    className={`smoothing-btn${smoothing === value ? ' active' : ''}`}
+                    onClick={() => setSmoothing(value)}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </label>
+          </div>
+
+          <div className="chart-card">
+            <canvas ref={canvasRef} />
+            {loading && <div className="chart-overlay">Loading…</div>}
+          </div>
+
+          <div className="chart-card">
+            <canvas ref={canvasSpeedRef} />
+            {loading && <div className="chart-overlay">Loading…</div>}
+          </div>
+
+          {payload && !loading && (
+            <div className="legend-card">
+              <div className="legend-actions">
+                <button className="btn-action" onClick={() => setHidden(new Set())}>Show All</button>
+                <button className="btn-action"
+                  onClick={() => setHidden(new Set(stations.map(s => s.id)))}>Hide All</button>
+                <span>{visibleCount} / {stations.length} visible</span>
+              </div>
+              <div className="legend-grid">
+                {stations.map((station, i) => {
+                  const color = colorFor(i);
+                  return (
+                    <button key={station.id}
+                      className={`station-btn${hidden.has(station.id) ? ' hidden' : ''}`}
+                      style={{ borderColor: color }}
+                      onClick={() => toggleStation(station.id)}>
+                      <Swatch color={color} dash={singleDashFor(i)} isComparing={isComparing} />
+                      {station.name} ({station.id})
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
