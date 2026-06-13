@@ -350,7 +350,7 @@
 
       // ── Load available dates ──────────────────────────────────────────────────
       useEffect(() => {
-        fetch('/api/dates')
+        fetch('/dates.json')
           .then(r => r.json())
           .then(ds => {
             setDates(ds);
@@ -364,9 +364,9 @@
         setLoading(true);
         const date2 = (selDate2 && selDate2 !== selDate) ? selDate2 : null;
         Promise.all([
-          fetch(`/api/data?date=${selDate}&direction=${direction}`).then(r => r.json()),
+          fetch(`/data/${selDate}/${direction}.json`).then(r => r.json()),
           date2
-            ? fetch(`/api/data?date=${date2}&direction=${direction}`).then(r => r.json())
+            ? fetch(`/data/${date2}/${direction}.json`).then(r => r.json())
             : Promise.resolve(null),
         ])
           .then(([d1, d2]) => {

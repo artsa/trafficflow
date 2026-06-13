@@ -16,3 +16,12 @@ Thumbs.db
 tms_cache/
 *.png
 
+# CDK
+infra/cdk.out/
+infra/.venv/
+infra/node_modules/
+infra/cdk-outputs.json
+
+# Local CloudFront logs (sync with scripts/sync_logs.py)
+logs/
+

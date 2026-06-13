@@ -1,0 +1,18 @@
+{
+  "app": "uv run python app.py",
+  "watch": {
+    "include": ["**"],
+    "exclude": [
+      "README.md",
+      "cdk*.json",
+      "**/__pycache__/**",
+      "**/*.egg-info/**",
+      ".venv/**",
+      "cdk.out/**"
+    ]
+  },
+  "context": {
+    "@aws-cdk/aws-cloudfront:defaultSecurityPolicyTLSv1.2_2021": true,
+    "@aws-cdk/core:stackRelativeExports": "true"
+  }
+}

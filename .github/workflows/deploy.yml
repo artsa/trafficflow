@@ -1,0 +1,98 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# OIDC token needed to authenticate to AWS.
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install app dependencies
+        run: uv sync
+
+      # ── AWS credentials ────────────────────────────────────────────────────
+      # AWS_ACCOUNT_ID and SITE_HOSTNAME are repository variables (Settings →
+      # Secrets and variables → Variables). They are not secrets.
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/liikennevirta-deploy
+          aws-region: eu-north-1
+
+      # ── Deploy infrastructure ──────────────────────────────────────────────
+      - name: Install CDK dependencies
+        working-directory: infra
+        run: |
+          uv sync
+          npm install
+
+      - name: Deploy CDK stack
+        working-directory: infra
+        env:
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+          SITE_HOSTNAME: ${{ vars.SITE_HOSTNAME }}
+          GITHUB_REPO: ${{ github.repository }}
+        run: npx aws-cdk deploy --all --require-approval never --outputs-file cdk-outputs.json
+
+      - name: Sync data files from S3 (for build)
+        run: |
+          aws s3 sync s3://${{ vars.SITE_HOSTNAME }}-data/tms_cache/ tms_cache/
+
+      - name: Build static data files
+        run: uv run python build_data.py
+
+      # ── Sync to S3 ────────────────────────────────────────────────────────
+      # Sync data files first with a long cache, then overwrite the index and
+      # manifest with a short cache so users always get fresh navigation state.
+      - name: Sync data files (long cache)
+        run: |
+          aws s3 sync dist/data/ s3://${{ vars.SITE_HOSTNAME }}/data/ \
+            --delete \
+            --cache-control "public, max-age=86400, immutable"
+
+      - name: Sync root files (short cache)
+        run: |
+          aws s3 sync dist/ s3://${{ vars.SITE_HOSTNAME }}/ \
+            --exclude "data/*" \
+            --delete \
+            --cache-control "public, max-age=60"
+
+      # ── Invalidate CloudFront cache ────────────────────────────────────────
+      - name: Invalidate CloudFront cache
+        working-directory: infra
+        run: |
+          DISTRIBUTION_ID=$(python - <<'EOF'
+          import json, sys
+          with open("cdk-outputs.json") as f:
+              outputs = json.load(f)
+          stack = outputs.get("Liikennevirta", {})
+          dist_id = stack.get("DistributionId")
+          if not dist_id:
+              sys.exit("DistributionId not found in cdk-outputs.json")
+          print(dist_id)
+          EOF
+          )
+          aws cloudfront create-invalidation \
+            --distribution-id "$DISTRIBUTION_ID" \
+            --paths "/*"
